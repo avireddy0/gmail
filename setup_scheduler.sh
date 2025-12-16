@@ -6,7 +6,7 @@ set -e
 # Configuration
 PROJECT_ID="claude-mcp-457317"
 REGION="us-central1"
-JOB_NAME="gmail-scraper-hourly"
+JOB_NAME="gmail-scraper-5min"
 SERVICE_NAME="gmail-scraper"
 
 echo "=== Cloud Scheduler Setup for Gmail Scraper ==="
@@ -40,11 +40,11 @@ gcloud scheduler jobs delete $JOB_NAME \
   --quiet 2>/dev/null || true
 
 # Create the scheduler job
-# Runs every hour at minute 0
+# Runs every 5 minutes
 gcloud scheduler jobs create http $JOB_NAME \
   --project=$PROJECT_ID \
   --location=$REGION \
-  --schedule="0 * * * *" \
+  --schedule="*/5 * * * *" \
   --time-zone="America/New_York" \
   --uri="${SERVICE_URL}/" \
   --http-method=POST \
