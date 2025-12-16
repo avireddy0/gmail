@@ -4,7 +4,7 @@ from google.cloud import bigquery
 import json
 import os
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 # Service account configuration
@@ -57,11 +57,25 @@ def ensure_table_exists(client):
     table = bigquery.Table(table_ref, schema=schema)
 
     try:
-        client.get_table(table_ref)
+        existing_table = client.get_table(table_ref)
         print(f"Table {table_ref} already exists")
-    except Exception:
-        table = client.create_table(table)
-        print(f"Created table {table_ref}")
+
+        # Check if schema needs to be updated
+        existing_field_names = {field.name for field in existing_table.schema}
+        new_field_names = {field.name for field in schema}
+        missing_fields = new_field_names - existing_field_names
+
+        if missing_fields:
+            print(f"Updating table schema - adding missing fields: {missing_fields}")
+            existing_table.schema = schema
+            client.update_table(existing_table, ["schema"])
+            print(f"Schema updated successfully")
+    except Exception as e:
+        if "Not found" in str(e):
+            table = client.create_table(table)
+            print(f"Created table {table_ref}")
+        else:
+            raise e
 
     return table_ref
 
