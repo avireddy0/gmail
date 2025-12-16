@@ -1,0 +1,21 @@
+# Service account keys - NEVER commit these
+service-account-key.json
+*-key.json
+*.json.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Output files
+all_company_emails.json
