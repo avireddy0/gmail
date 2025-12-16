@@ -1,5 +1,5 @@
 #!/bin/bash
-# Gmail Scraper Cloud Run Deployment Script
+# Gmail Scraper Cloud Run Deployment Script with Hourly Scheduler
 set -e
 
 # Configuration
@@ -9,6 +9,7 @@ REGION="us-central1"
 SERVICE_ACCOUNT_EMAIL="claude-service-account@claude-mcp-457317.iam.gserviceaccount.com"
 SERVICE_ACCOUNT_KEY_FILE="$HOME/claude-mcp-457317-069a2a199017.json"
 ADMIN_EMAIL="avi@envsn.com"
+SCHEDULER_JOB_NAME="gmail-scraper-hourly"
 
 echo "=== Gmail Scraper Cloud Run Deployment ==="
 echo "Project: $PROJECT_ID"
@@ -35,13 +36,63 @@ gcloud run deploy $SERVICE_NAME \
   --cpu=2 \
   --max-instances=1
 
+# Step 3: Get the service URL
+echo ""
+echo "Step 3: Getting service URL..."
+SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \
+  --project=$PROJECT_ID \
+  --region=$REGION \
+  --format='value(status.url)')
+
+echo "Service URL: $SERVICE_URL"
+
+# Step 4: Set up Cloud Scheduler for hourly incremental scraping
+echo ""
+echo "Step 4: Setting up hourly Cloud Scheduler job..."
+
+# Delete existing job if it exists
+gcloud scheduler jobs delete $SCHEDULER_JOB_NAME \
+  --project=$PROJECT_ID \
+  --location=$REGION \
+  --quiet 2>/dev/null || true
+
+# Create new scheduler job (runs every hour at minute 0)
+gcloud scheduler jobs create http $SCHEDULER_JOB_NAME \
+  --project=$PROJECT_ID \
+  --location=$REGION \
+  --schedule="0 * * * *" \
+  --time-zone="America/New_York" \
+  --uri="${SERVICE_URL}/" \
+  --http-method=POST \
+  --headers="Content-Type=application/json" \
+  --message-body='{"incremental": true, "max_per_user": 100}' \
+  --attempt-deadline=3600s \
+  --description="Hourly incremental Gmail scrape to BigQuery"
+
 echo ""
 echo "=== Deployment Complete ==="
 echo ""
-echo "Service URL will be displayed above."
+echo "Cloud Run Service:"
+echo "  URL: $SERVICE_URL"
 echo ""
-echo "To trigger a scrape, use:"
-echo "curl -X POST https://YOUR-SERVICE-URL/ \\"
-echo "  -H 'Content-Type: application/json' \\"
-echo "  -d '{\"query\": \"after:2024/12/01\", \"max_per_user\": 100}'"
+echo "Cloud Scheduler Job:"
+echo "  Name: $SCHEDULER_JOB_NAME"
+echo "  Schedule: Every hour at minute 0 (0 * * * *)"
+echo "  Timezone: America/New_York"
+echo "  Mode: Incremental (only new messages)"
+echo ""
+echo "Manual Commands:"
+echo ""
+echo "  # Trigger scrape manually:"
+echo "  curl -X POST $SERVICE_URL/ \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"incremental\": true, \"max_per_user\": 100}'"
+echo ""
+echo "  # Full scrape (all messages, not just new):"
+echo "  curl -X POST $SERVICE_URL/ \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"incremental\": false, \"max_per_user\": 500}'"
+echo ""
+echo "  # Trigger scheduler job manually:"
+echo "  gcloud scheduler jobs run $SCHEDULER_JOB_NAME --project=$PROJECT_ID --location=$REGION"
 echo ""

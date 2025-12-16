@@ -4,7 +4,7 @@ from google.cloud import bigquery
 import json
 import os
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 # Service account configuration
@@ -64,6 +64,72 @@ def ensure_table_exists(client):
         print(f"Created table {table_ref}")
 
     return table_ref
+
+def get_existing_message_ids(client, user_email=None):
+    """Get set of existing message IDs from BigQuery to avoid duplicates."""
+    table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+
+    if user_email:
+        query = f"""
+            SELECT DISTINCT message_id
+            FROM `{table_ref}`
+            WHERE user_email = @user_email
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_email", "STRING", user_email)
+            ]
+        )
+    else:
+        query = f"SELECT DISTINCT message_id FROM `{table_ref}`"
+        job_config = bigquery.QueryJobConfig()
+
+    try:
+        results = client.query(query, job_config=job_config).result()
+        return {row.message_id for row in results}
+    except Exception as e:
+        print(f"Error fetching existing message IDs: {e}")
+        return set()
+
+def get_last_scrape_timestamp(client, user_email=None):
+    """Get the timestamp of the most recently scraped email."""
+    table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+
+    if user_email:
+        query = f"""
+            SELECT MAX(date_sent) as last_date
+            FROM `{table_ref}`
+            WHERE user_email = @user_email
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_email", "STRING", user_email)
+            ]
+        )
+    else:
+        query = f"SELECT MAX(date_sent) as last_date FROM `{table_ref}`"
+        job_config = bigquery.QueryJobConfig()
+
+    try:
+        results = client.query(query, job_config=job_config).result()
+        for row in results:
+            return row.last_date
+    except Exception as e:
+        print(f"Error fetching last scrape timestamp: {e}")
+    return None
+
+def build_incremental_query(base_query, last_timestamp):
+    """Build Gmail query that only fetches emails after the last scraped timestamp."""
+    if last_timestamp:
+        # Add 1 second buffer and format for Gmail query
+        # Gmail 'after:' uses epoch seconds
+        after_timestamp = int(last_timestamp.timestamp())
+        incremental_filter = f"after:{after_timestamp}"
+
+        if base_query:
+            return f"{base_query} {incremental_filter}"
+        return incremental_filter
+    return base_query
 
 def get_header_value(headers, name):
     """Extract a header value from message headers."""
@@ -178,8 +244,8 @@ def get_all_users(admin_email):
 
     return [user['primaryEmail'] for user in users]
 
-def scrape_user_emails(user_email, query='', max_results=100):
-    """Scrape emails for a specific user."""
+def scrape_user_emails(user_email, query='', max_results=100, existing_ids=None):
+    """Scrape emails for a specific user, skipping already-scraped messages."""
     credentials = get_credentials()
     delegated_creds = credentials.with_subject(user_email)
     gmail_service = build('gmail', 'v1', credentials=delegated_creds)
@@ -187,13 +253,15 @@ def scrape_user_emails(user_email, query='', max_results=100):
     messages = []
     page_token = None
     fetched = 0
+    skipped = 0
+    existing_ids = existing_ids or set()
 
     try:
         while fetched < max_results:
             results = gmail_service.users().messages().list(
                 userId='me',
                 q=query,
-                maxResults=min(100, max_results - fetched),
+                maxResults=min(100, max_results - fetched + 50),  # Fetch extra to account for skips
                 pageToken=page_token
             ).execute()
 
@@ -201,6 +269,12 @@ def scrape_user_emails(user_email, query='', max_results=100):
                 for msg in results['messages']:
                     if fetched >= max_results:
                         break
+
+                    # Skip if already in BigQuery
+                    if msg['id'] in existing_ids:
+                        skipped += 1
+                        continue
+
                     # Get full message details
                     message = gmail_service.users().messages().get(
                         userId='me',
@@ -217,16 +291,27 @@ def scrape_user_emails(user_email, query='', max_results=100):
     except Exception as e:
         print(f"Error scraping {user_email}: {str(e)}")
 
+    if skipped > 0:
+        print(f"  -> Skipped {skipped} already-scraped messages")
+
     return messages
 
-def main(query='', max_per_user=100):
-    """Main function to scrape emails and store in BigQuery."""
+def main(query='', max_per_user=100, incremental=True):
+    """Main function to scrape emails and store in BigQuery.
+
+    Args:
+        query: Gmail search query (e.g., 'subject:RFI')
+        max_per_user: Maximum new emails to scrape per user
+        incremental: If True, only fetch emails newer than last scrape
+    """
     ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'avi@envsn.com')
 
     results = {
         'status': 'started',
+        'mode': 'incremental' if incremental else 'full',
         'users_processed': 0,
         'total_emails': 0,
+        'skipped_duplicates': 0,
         'errors': []
     }
 
@@ -247,8 +332,28 @@ def main(query='', max_per_user=100):
             print(f"Scraping emails for {user_email}...")
 
             try:
-                emails = scrape_user_emails(user_email, query=query, max_results=max_per_user)
-                print(f"  -> Found {len(emails)} emails")
+                # Get existing message IDs for this user (for deduplication)
+                existing_ids = get_existing_message_ids(bq_client, user_email)
+                print(f"  -> Found {len(existing_ids)} existing messages in BigQuery")
+
+                # Build incremental query if enabled
+                effective_query = query
+                if incremental:
+                    last_timestamp = get_last_scrape_timestamp(bq_client, user_email)
+                    if last_timestamp:
+                        effective_query = build_incremental_query(query, last_timestamp)
+                        print(f"  -> Incremental mode: fetching emails after {last_timestamp}")
+                    else:
+                        print(f"  -> No previous scrape found, doing full scrape")
+
+                # Scrape new emails
+                emails = scrape_user_emails(
+                    user_email,
+                    query=effective_query,
+                    max_results=max_per_user,
+                    existing_ids=existing_ids
+                )
+                print(f"  -> Found {len(emails)} new emails")
 
                 # Process and insert to BigQuery
                 if emails:
@@ -265,6 +370,7 @@ def main(query='', max_per_user=100):
                 results['errors'].append(error_msg)
 
         results['status'] = 'completed'
+        results['completed_at'] = datetime.utcnow().isoformat()
 
     except Exception as e:
         results['status'] = 'failed'
