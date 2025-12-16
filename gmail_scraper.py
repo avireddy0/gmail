@@ -9,25 +9,25 @@ from email.utils import parsedate_to_datetime
 
 # Service account configuration
 SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', 'service-account-key.json')
-SCOPES = [
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/admin.directory.user.readonly',
-    'https://www.googleapis.com/auth/bigquery'
-]
+
+# Scopes definitions
+BQ_SCOPES = ['https://www.googleapis.com/auth/bigquery']
+GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+ADMIN_SCOPES = ['https://www.googleapis.com/auth/admin.directory.user.readonly']
 
 # BigQuery configuration
 PROJECT_ID = os.getenv('PROJECT_ID', 'claude-mcp-457317')
 DATASET_ID = os.getenv('DATASET_ID', 'gmail_analytics')
 TABLE_ID = os.getenv('TABLE_ID', 'messages')
 
-def get_credentials():
-    """Get service account credentials."""
+def get_service_account_credentials(scopes):
+    """Get base service account credentials with specific scopes."""
     return service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+        SERVICE_ACCOUNT_FILE, scopes=scopes)
 
 def get_bigquery_client():
-    """Get BigQuery client."""
-    credentials = get_credentials()
+    """Get BigQuery client using service account identity."""
+    credentials = get_service_account_credentials(BQ_SCOPES)
     return bigquery.Client(project=PROJECT_ID, credentials=credentials)
 
 def ensure_table_exists(client):
@@ -222,7 +222,8 @@ def insert_to_bigquery(client, table_ref, rows):
 
 def get_all_users(admin_email):
     """Get all users in the Google Workspace domain."""
-    credentials = get_credentials()
+    # Use Admin SDK scopes for this operation
+    credentials = get_service_account_credentials(ADMIN_SCOPES)
     delegated_creds = credentials.with_subject(admin_email)
     admin_service = build('admin', 'directory_v1', credentials=delegated_creds)
 
@@ -246,7 +247,8 @@ def get_all_users(admin_email):
 
 def scrape_user_emails(user_email, query='', max_results=100, existing_ids=None):
     """Scrape emails for a specific user, skipping already-scraped messages."""
-    credentials = get_credentials()
+    # Use Gmail scopes for this operation
+    credentials = get_service_account_credentials(GMAIL_SCOPES)
     delegated_creds = credentials.with_subject(user_email)
     gmail_service = build('gmail', 'v1', credentials=delegated_creds)
 
