@@ -65,6 +65,43 @@ def ensure_table_exists(client):
 
     return table_ref
 
+def query_messages(client=None, limit=100):
+    """Query messages from BigQuery table for debugging/verification."""
+    if client is None:
+        client = get_bigquery_client()
+
+    table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+
+    # First get total count
+    count_query = f"SELECT COUNT(*) as total FROM `{table_ref}`"
+    try:
+        count_result = client.query(count_query).result()
+        total_count = next(iter(count_result)).total
+        print(f"Total messages in table: {total_count}")
+    except Exception as e:
+        print(f"Error counting messages: {e}")
+        total_count = 0
+
+    if total_count == 0:
+        return []
+
+    # Then get sample messages
+    query = f"""
+        SELECT message_id, user_email, subject, from_address, date_sent, scraped_at
+        FROM `{table_ref}`
+        ORDER BY scraped_at DESC
+        LIMIT {limit}
+    """
+
+    try:
+        results = client.query(query).result()
+        messages = [dict(row) for row in results]
+        return messages
+    except Exception as e:
+        print(f"Error querying messages: {e}")
+        return []
+
+
 def get_existing_message_ids(client, user_email=None):
     """Get set of existing message IDs from BigQuery to avoid duplicates."""
     table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"

@@ -1,7 +1,7 @@
 import functions_framework
 import json
 import os
-from gmail_scraper import main as scraper_main
+from gmail_scraper import main as scraper_main, query_messages
 
 @functions_framework.http
 def run_scraper(request):
@@ -20,13 +20,34 @@ def run_scraper(request):
     """
     # Handle health check
     if request.method == 'GET':
+        # Check for query parameter to query the BigQuery table
+        if request.args.get('action') == 'query':
+            try:
+                limit = int(request.args.get('limit', 100))
+                messages = query_messages(limit=limit)
+                return json.dumps({
+                    'status': 'success',
+                    'count': len(messages),
+                    'messages': messages
+                }, default=str), 200, {'Content-Type': 'application/json'}
+            except Exception as e:
+                return json.dumps({
+                    'status': 'error',
+                    'error': str(e)
+                }), 500, {'Content-Type': 'application/json'}
+
         return json.dumps({
             'status': 'healthy',
             'service': 'gmail-scraper',
             'project': os.getenv('PROJECT_ID', 'claude-mcp-457317'),
             'dataset': os.getenv('DATASET_ID', 'gmail_analytics'),
             'table': os.getenv('TABLE_ID', 'messages'),
-            'mode': 'incremental'
+            'mode': 'incremental',
+            'endpoints': {
+                'health': 'GET /',
+                'query': 'GET /?action=query&limit=100',
+                'scrape': 'POST /'
+            }
         }), 200, {'Content-Type': 'application/json'}
 
     # Handle scrape request
