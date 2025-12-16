@@ -4,7 +4,7 @@ from google.cloud import bigquery
 import json
 import os
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 # Service account configuration
@@ -206,7 +206,7 @@ def process_message(message, user_email):
         'has_attachments': has_attachments,
         'attachment_count': attachment_count,
         'size_estimate': message.get('sizeEstimate'),
-        'scraped_at': datetime.utcnow().isoformat(),
+        'scraped_at': datetime.now(timezone.utc).isoformat(),
     }
 
 def insert_to_bigquery(client, table_ref, rows):
@@ -372,7 +372,7 @@ def main(query='', max_per_user=100, incremental=True):
                 results['errors'].append(error_msg)
 
         results['status'] = 'completed'
-        results['completed_at'] = datetime.utcnow().isoformat()
+        results['completed_at'] = datetime.now(timezone.utc).isoformat()
 
     except Exception as e:
         results['status'] = 'failed'
